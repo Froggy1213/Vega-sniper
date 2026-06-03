@@ -1,0 +1,4 @@
+.env
+bot/.venv/
+__pycache__/
+*.py[oc]
