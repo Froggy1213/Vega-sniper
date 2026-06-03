@@ -1,0 +1,33 @@
+services:
+  # 🐘 База данных для хранения пользователей бота
+  db:
+    image: postgres:15-alpine
+    container_name: sniffer_db
+    restart: always
+    environment:
+      POSTGRES_USER: sniffer_admin
+      POSTGRES_PASSWORD: super_secret_password
+      POSTGRES_DB: sniffer_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # 🐇 Брокер сообщений (Передает товары от Go к Python)
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: sniffer_rabbitmq
+    restart: always
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - "5672:5672"   # Порт для общения программ
+      - "15672:15672" # Порт для веб-панели управления в браузере
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+
+volumes:
+  postgres_data:
+  rabbitmq_data:
+  
