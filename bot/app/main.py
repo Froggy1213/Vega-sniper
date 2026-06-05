@@ -3,11 +3,15 @@ import logging
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.fsm.storage.memory import MemoryStorage
 
 from app.core.config import settings
 from app.db.middleware import DbSessionMiddleware
 from app.db.session import close_db, init_db
-from app.handlers.base import router
+from app.handlers.base import router as base_router
+from app.handlers.errors import router as errors_router
+from app.handlers.premium import router as premium_router
+from app.handlers.search import router as search_router
 from app.services.rabbitmq import consume_rabbitmq
 
 logger = logging.getLogger(__name__)
@@ -18,11 +22,6 @@ async def on_startup() -> None:
     logger.info("Database initialized")
 
 
-async def on_shutdown() -> None:
-    await close_db()
-    logger.info("Database connections closed")
-
-
 async def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -30,15 +29,28 @@ async def main() -> None:
     )
 
     bot = Bot(token=settings.bot_token, default=DefaultBotProperties(parse_mode="HTML"))
-    dp = Dispatcher()
+    dp = Dispatcher(storage=MemoryStorage())
 
     dp.update.middleware(DbSessionMiddleware())
-    dp.include_router(router)
+    dp.include_router(errors_router)
+    dp.include_router(base_router)
+    dp.include_router(premium_router)
+    dp.include_router(search_router)
+
+    rabbitmq_task = asyncio.create_task(consume_rabbitmq(bot))
+
+    async def shutdown_handler(_bot: Bot) -> None:
+        rabbitmq_task.cancel()
+        try:
+            await rabbitmq_task
+        except asyncio.CancelledError:
+            pass
+        await close_db()
+        await bot.session.close()
+        logger.info("Shutdown complete")
 
     dp.startup.register(on_startup)
-    dp.shutdown.register(on_shutdown)
-
-    asyncio.create_task(consume_rabbitmq(bot))
+    dp.shutdown.register(shutdown_handler)
 
     logger.info("Telegram bot starting...")
     await bot.delete_webhook(drop_pending_updates=True)

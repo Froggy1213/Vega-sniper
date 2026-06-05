@@ -43,7 +43,7 @@ class Search(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     price_max: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
 
-    user: Mapped[User] = relationship(back_populates="searches")
+    user: Mapped[User] = relationship(back_populates="searches", lazy="joined")
 
     def matches_price(self, price: int) -> bool:
         if self.price_min is not None and price < self.price_min:

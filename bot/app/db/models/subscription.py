@@ -42,7 +42,7 @@ class Subscription(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    user: Mapped[User] = relationship(back_populates="subscriptions")
+    user: Mapped[User] = relationship(back_populates="subscriptions", lazy="joined")
 
     @property
     def is_active(self) -> bool:

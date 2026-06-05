@@ -2,6 +2,7 @@ import logging
 from dataclasses import dataclass
 
 from sqlalchemy import func, literal, select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.enums import Platform
@@ -50,8 +51,11 @@ async def find_matching_recipients(
     stmt = (
         select(User, Search)
         .join(Search, Search.user_id == User.id)
+        .options(
+            selectinload(User.searches), # Явно грузим всё, что может понадобиться
+            selectinload(Search.user)
+        )
         .where(
-            User.is_premium.is_(True),
             User.is_active.is_(True),
             Search.is_active.is_(True),
             Search.platform == platform,
@@ -70,7 +74,7 @@ async def find_matching_recipients(
     matches = [MatchResult(user=row[0], search=row[1]) for row in result.all()]
 
     logger.info(
-        "Item %r matched %d premium user(s) on %s",
+        "Item %r matched %d recipient(s) on %s",
         item.name,
         len(matches),
         platform.value,
