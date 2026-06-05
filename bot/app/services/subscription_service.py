@@ -1,6 +1,5 @@
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -9,17 +8,12 @@ from app.db.models import Subscription, User
 
 
 async def refresh_premium_status(session: AsyncSession, user: User) -> bool:
-    """Sync is_premium from active subscriptions. Returns current premium state."""
+    """Обновляет статус is_premium на основе активных подписок."""
     now = datetime.now(timezone.utc)
     has_active = False
 
-    # ЯВНЫЙ АСИНХРОННЫЙ ЗАПРОС вместо глючного user.subscriptions
-    result = await session.execute(
-        select(Subscription).where(Subscription.user_id == user.id)
-    )
-    subscriptions = result.scalars().all()
-
-    for subscription in subscriptions:
+    # ИЗМЕНЕНИЕ ЗДЕСЬ: просто итерируемся по уже загруженным подпискам!
+    for subscription in user.subscriptions:
         if subscription.status != SubscriptionStatus.ACTIVE:
             continue
         if subscription.expires_at is not None and subscription.expires_at <= now:
@@ -44,13 +38,8 @@ async def activate_stars_subscription(
 
     base_time = now
     
-    # ЯВНЫЙ АСИНХРОННЫЙ ЗАПРОС вместо глючного user.subscriptions
-    result = await session.execute(
-        select(Subscription).where(Subscription.user_id == user.id)
-    )
-    subscriptions = result.scalars().all()
-
-    for subscription in subscriptions:
+    # ИЗМЕНЕНИЕ ЗДЕСЬ: снова используем готовый список вместо нового SQL-запроса
+    for subscription in user.subscriptions:
         if (
             subscription.status == SubscriptionStatus.ACTIVE
             and subscription.expires_at is not None
@@ -67,7 +56,10 @@ async def activate_stars_subscription(
         started_at=now,
         expires_at=base_time + duration,
     )
+    
     session.add(subscription)
+    user.subscriptions.append(subscription) # Хорошая практика: добавляем новую подписку в объект
     user.is_premium = True
+    
     await session.flush()
     return subscription

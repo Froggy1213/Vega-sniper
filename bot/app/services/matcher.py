@@ -51,10 +51,6 @@ async def find_matching_recipients(
     stmt = (
         select(User, Search)
         .join(Search, Search.user_id == User.id)
-        .options(
-            selectinload(User.searches), # Явно грузим всё, что может понадобиться
-            selectinload(Search.user)
-        )
         .where(
             User.is_active.is_(True),
             Search.is_active.is_(True),

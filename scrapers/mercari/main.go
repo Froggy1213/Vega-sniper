@@ -90,9 +90,22 @@ func main() {
 		rabbitURL = "amqp://guest:guest@localhost:5672/" // Фолбэк для тестов без докера
 	}
 
-	conn, err := amqp.Dial(rabbitURL)
+	var conn *amqp.Connection
+	var err error
+
+	// Делаем 7 попыток с интервалом в 3 секунды
+	for i := 1; i <= 7; i++ {
+		conn, err = amqp.Dial(rabbitURL)
+		if err == nil {
+			fmt.Println("✅ Успешно подключились к RabbitMQ!")
+			break // Выходим из цикла, если подключение удалось
+		}
+		log.Printf("⏳ RabbitMQ еще не готов, ждем... (попытка %d/7): %v\n", i, err)
+		time.Sleep(3 * time.Second)
+	}
+
 	if err != nil {
-		log.Fatalf("❌ Ошибка подключения к RabbitMQ: %v", err)
+		log.Fatalf("❌ Ошибка подключения к RabbitMQ после всех попыток: %v", err)
 	}
 	defer conn.Close()
 

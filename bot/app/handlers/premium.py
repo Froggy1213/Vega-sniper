@@ -5,6 +5,7 @@ from aiogram.filters import Command
 from aiogram.types import Message, PreCheckoutQuery
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.enums import SubscriptionStatus
 from app.keyboards.menu import BTN_PREMIUM, main_menu_keyboard
 from app.services.premium_service import (
     handle_pre_checkout,
@@ -28,13 +29,15 @@ async def cmd_premium(message: Message, session: AsyncSession) -> None:
     await refresh_premium_status(session, user)
 
     if user.is_premium:
-        active_until = "unknown"
-        for sub in user.subscriptions:
-            if sub.is_active and sub.expires_at:
-                active_until = sub.expires_at.strftime("%Y-%m-%d")
-                break
+        # Ищем подписку в уже загруженных данных без лишних запросов к БД
+        active_sub = next(
+            (sub for sub in user.subscriptions if sub.status == SubscriptionStatus.ACTIVE and sub.expires_at is not None),
+            None
+        )
+        
+        active_until = active_sub.expires_at.strftime("%Y-%m-%d") if active_sub else "unknown"
         await message.answer(
-            f"⭐ You already have <b>Premium</b>.\n"
+            f"✨ You already have <b>Premium</b>.\n"
             f"Active until: <b>{active_until}</b>\n\n"
             "Enjoy unlimited search alerts!",
             reply_markup=main_menu_keyboard(),
