@@ -3,10 +3,9 @@ from typing import Any
 
 from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_session_factory
-
+from app.services.user_service import get_or_create_user_in_session
 
 class DbSessionMiddleware(BaseMiddleware):
     async def __call__(
@@ -18,6 +17,12 @@ class DbSessionMiddleware(BaseMiddleware):
         session_factory = get_session_factory()
         async with session_factory() as session:
             data["session"] = session
+            
+            # Прокидываем юзера во все хэндлеры
+            if event.from_user:
+                user = await get_or_create_user_in_session(session, event.from_user)
+                data["user"] = user
+                
             try:
                 result = await handler(event, data)
                 await session.commit()

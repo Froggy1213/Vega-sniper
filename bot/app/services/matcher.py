@@ -1,18 +1,19 @@
 import logging
 from dataclasses import dataclass
 
-from sqlalchemy import func, literal, select
-from sqlalchemy.orm import selectinload
+from pydantic import BaseModel, ConfigDict
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
-from app.db.enums import Platform
 from app.db.models import Search, User
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True, slots=True)
-class MarketplaceItem:
+class MarketplaceItem(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     platform: str
     name: str
     price: int
@@ -20,59 +21,46 @@ class MarketplaceItem:
     item_id: str | None = None
     photo_url: str | None = None
 
-    @classmethod
-    def from_message(cls, data: dict[str, object]) -> "MarketplaceItem":
-        return cls(
-            platform=str(data["platform"]),
-            name=str(data["name"]),
-            price=int(data["price"]),
-            url=str(data["url"]),
-            item_id=str(data["item_id"]) if data.get("item_id") else None,
-            photo_url=str(data["photo_url"]) if data.get("photo_url") else None,
-        )
-
 
 @dataclass(frozen=True, slots=True)
 class MatchResult:
-    user: User
-    search: Search
+    user_id: int
+    keyword: str
 
 
-async def find_matching_recipients(
-    session: AsyncSession,
-    item: MarketplaceItem,
-) -> list[MatchResult]:
-    try:
-        platform = Platform(item.platform)
-    except ValueError:
-        logger.warning("Unknown platform in item payload: %s", item.platform)
-        return []
-
+async def get_active_searches(session: AsyncSession) -> list[Search]:
+    """Выгружает все активные поиски вместе с юзерами для кэша."""
     stmt = (
-        select(User, Search)
-        .join(Search, Search.user_id == User.id)
-        .where(
-            User.is_active.is_(True),
-            Search.is_active.is_(True),
-            Search.platform == platform,
-            func.lower(literal(item.name)).like(
-                func.concat("%", func.lower(Search.keyword), "%"),
-            ),
-        )
+        select(Search)
+        .options(joinedload(Search.user))
+        .join(User)
+        .where(User.is_active.is_(True), Search.is_active.is_(True))
     )
-
-    stmt = stmt.where(
-        (Search.price_min.is_(None) | (Search.price_min <= item.price)),
-        (Search.price_max.is_(None) | (Search.price_max >= item.price)),
-    )
-
     result = await session.execute(stmt)
-    matches = [MatchResult(user=row[0], search=row[1]) for row in result.all()]
+    return list(result.scalars().all())
 
-    logger.info(
-        "Item %r matched %d recipient(s) on %s",
-        item.name,
-        len(matches),
-        platform.value,
-    )
+
+def find_matches_in_memory(
+    item: MarketplaceItem, 
+    active_searches: list[Search]
+) -> list[MatchResult]:
+    """Быстрый матчинг на стороне Python без дерганья базы."""
+    matches = []
+    item_name_lower = item.name.lower()
+    
+    for search in active_searches:
+        if search.platform.value != item.platform:
+            continue
+            
+        if search.keyword.lower() not in item_name_lower:
+            continue
+            
+        if search.price_min and item.price < search.price_min:
+            continue
+            
+        if search.price_max and item.price > search.price_max:
+            continue
+            
+        matches.append(MatchResult(user_id=search.user.telegram_id, keyword=search.keyword))
+        
     return matches

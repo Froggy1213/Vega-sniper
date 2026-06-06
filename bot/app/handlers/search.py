@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.enums import Platform
-from app.db.models import Search
+from app.db.models import Search, User
 from app.keyboards.menu import BTN_ADD_SEARCH, BTN_MY_SEARCHES, MENU_BUTTONS, main_menu_keyboard
 from app.keyboards.search import (
     NO_LIMIT,
@@ -24,8 +24,6 @@ from app.keyboards.search import (
     price_min_keyboard,
 )
 from app.services.search_service import format_price_range, normalize_price
-from app.services.subscription_service import refresh_premium_status
-from app.services.user_service import get_or_create_user_in_session
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -55,14 +53,8 @@ def build_searches_keyboard(searches: list[Search]) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-async def _check_search_limit(message: Message, session: AsyncSession) -> bool:
+async def _check_search_limit(message: Message, session: AsyncSession, user: User) -> bool:
     """Return True if user can add another search."""
-    if message.from_user is None:
-        return False
-
-    user = await get_or_create_user_in_session(session, message.from_user)
-    await refresh_premium_status(session, user)
-
     if user.is_premium:
         return True
 
@@ -95,14 +87,10 @@ async def _save_search(
     message: Message,
     session: AsyncSession,
     state: FSMContext,
-    *,
+    user: User,
     price_min: int | None,
     price_max: int | None,
 ) -> None:
-    if message.from_user is None:
-        await state.clear()
-        return
-
     data = await state.get_data()
     keyword: str = data["keyword"]
 
@@ -113,8 +101,6 @@ async def _save_search(
         )
         await state.clear()
         return
-
-    user = await get_or_create_user_in_session(session, message.from_user)
 
     existing = await session.scalar(
         select(Search).where(
@@ -180,8 +166,8 @@ async def cancel_add_callback(callback: CallbackQuery, state: FSMContext) -> Non
 
 @router.message(Command("add"))
 @router.message(F.text == BTN_ADD_SEARCH)
-async def cmd_add_search(message: Message, session: AsyncSession, state: FSMContext) -> None:
-    if not await _check_search_limit(message, session):
+async def cmd_add_search(message: Message, session: AsyncSession, state: FSMContext, user: User) -> None:
+    if not await _check_search_limit(message, session, user):
         return
     await _start_add_flow(message, state)
 
@@ -254,6 +240,7 @@ async def process_price_max_callback(
     callback_data: PriceMaxCallback,
     state: FSMContext,
     session: AsyncSession,
+    user: User,
 ) -> None:
     if callback_data.value == 0:
         await callback.answer()
@@ -271,10 +258,14 @@ async def process_price_max_callback(
     price_min = data.get("price_min")
 
     if callback.message:
+        # Убиваем старую клавиатуру, чтобы юзер не кликал по ней повторно
+        await callback.message.edit_reply_markup(reply_markup=None)
+        
         await _save_search(
             callback.message,
             session,
             state,
+            user,
             price_min=price_min,
             price_max=price_max,
         )
@@ -285,6 +276,7 @@ async def process_custom_price_max(
     message: Message,
     session: AsyncSession,
     state: FSMContext,
+    user: User,
 ) -> None:
     try:
         raw = int(message.text.strip())
@@ -298,18 +290,12 @@ async def process_custom_price_max(
     data = await state.get_data()
     price_min = data.get("price_min")
     price_max = normalize_price(raw)
-    await _save_search(message, session, state, price_min=price_min, price_max=price_max)
+    await _save_search(message, session, state, user, price_min=price_min, price_max=price_max)
 
 
 @router.message(Command("list"))
 @router.message(F.text == BTN_MY_SEARCHES)
-async def cmd_list_searches(message: Message, session: AsyncSession) -> None:
-    if message.from_user is None:
-        return
-
-    user = await get_or_create_user_in_session(session, message.from_user)
-    await refresh_premium_status(session, user)
-
+async def cmd_list_searches(message: Message, session: AsyncSession, user: User) -> None:
     result = await session.execute(
         select(Search)
         .where(Search.user_id == user.id, Search.is_active.is_(True))
@@ -339,18 +325,13 @@ async def process_delete_search(
     callback: CallbackQuery,
     callback_data: DeleteSearchCallback,
     session: AsyncSession,
+    user: User,
 ) -> None:
-    if callback.from_user is None:
-        await callback.answer()
-        return
-
     try:
         search_uuid = uuid.UUID(callback_data.search_id)
     except ValueError:
         await callback.answer("Invalid search ID.", show_alert=True)
         return
-
-    user = await get_or_create_user_in_session(session, callback.from_user)
 
     search = await session.scalar(
         select(Search).where(

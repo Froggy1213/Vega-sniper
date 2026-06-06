@@ -1,18 +1,25 @@
 import asyncio
-import json
 import logging
 
 import aio_pika
 from aiogram import Bot
+from aiogram.exceptions import TelegramAPIError, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.types import URLInputFile
+from pydantic import ValidationError
 
 from app.core.config import settings
 from app.db.session import get_session_factory
-from app.services.matcher import MarketplaceItem, find_matching_recipients
+from app.services.matcher import (
+    MarketplaceItem,
+    find_matches_in_memory,
+    get_active_searches,
+)
 
 logger = logging.getLogger(__name__)
 
 RECONNECT_DELAY_SECONDS = 5
+
+_ACTIVE_SEARCHES_CACHE = []
 
 
 def _build_notification_text(item: MarketplaceItem, keyword: str) -> str:
@@ -38,56 +45,72 @@ async def _send_notification(bot: Bot, chat_id: int, item: MarketplaceItem, keyw
         await bot.send_message(chat_id=chat_id, text=text)
 
 
+async def _update_cache_loop(session_factory) -> None:
+    """Фоновое обновление кэша поисков раз в минуту."""
+    global _ACTIVE_SEARCHES_CACHE
+    while True:
+        try:
+            async with session_factory() as session:
+                _ACTIVE_SEARCHES_CACHE = await get_active_searches(session)
+        except asyncio.CancelledError:
+            break  # Выходим из цикла при штатной остановке
+        except Exception as exc:
+            logger.error("Cache update failed: %s", exc)
+        await asyncio.sleep(60)
+
+
 async def _consume_loop(bot: Bot) -> None:
     connection = await aio_pika.connect_robust(settings.rabbitmq_url)
 
     async with connection:
         channel = await connection.channel()
+        await channel.set_qos(prefetch_count=50)
         queue = await channel.declare_queue("new_items_queue", durable=True)
-        logger.info("Connected to RabbitMQ, waiting for items on new_items_queue")
-
-        session_factory = get_session_factory()
+        
+        logger.info("Connected to RabbitMQ, waiting for items...")
 
         async with queue.iterator() as queue_iter:
             async for message in queue_iter:
-                async with message.process():
+                async with message.process(ignore_processed=True):
                     try:
-                        data = json.loads(message.body)
-                        item = MarketplaceItem.from_message(data)
-                    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+                        item = MarketplaceItem.model_validate_json(message.body)
+                    except ValidationError as exc:
                         logger.error("Invalid RabbitMQ payload: %s", exc)
+                        await message.reject(requeue=False)
                         continue
 
-                    async with session_factory() as session:
-                        matches = await find_matching_recipients(session, item)
+                    matches = find_matches_in_memory(item, _ACTIVE_SEARCHES_CACHE)
 
+                    try:
                         for match in matches:
                             try:
-                                await _send_notification(
-                                    bot,
-                                    match.user.telegram_id,
-                                    item,
-                                    match.search.keyword,
-                                )
-                                logger.info(
-                                    "Notification sent to telegram_id=%s for item=%r",
-                                    match.user.telegram_id,
-                                    item.name,
-                                )
-                            except Exception as exc:
-                                logger.error(
-                                    "Failed to notify telegram_id=%s: %s",
-                                    match.user.telegram_id,
-                                    exc,
-                                )
+                                await _send_notification(bot, match.user_id, item, match.keyword)
+                            except TelegramForbiddenError:
+                                logger.info("User %s blocked bot", match.user_id)
+                                # TODO: Деактивировать юзера в БД, чтобы не гонять вхолостую
+                                
+                        await message.ack()
+
+                    except (TelegramAPIError, TelegramRetryAfter) as exc:
+                        logger.warning("Telegram network error, requeueing: %s", exc)
+                        await message.reject(requeue=True)
+                    except Exception:
+                        logger.exception("Unexpected error during notification")
+                        await message.reject(requeue=True)
 
 
 async def consume_rabbitmq(bot: Bot) -> None:
+    session_factory = get_session_factory()
+    
+    # Запускаем апдейтер кэша один раз здесь
+    cache_task = asyncio.create_task(_update_cache_loop(session_factory))
+
     while True:
         try:
             await _consume_loop(bot)
         except asyncio.CancelledError:
             logger.info("RabbitMQ consumer stopped")
+            cache_task.cancel() # Убиваем кэш-апдейтер при выключении бота
             raise
         except Exception:
             logger.exception("RabbitMQ consumer error, reconnecting in %ss", RECONNECT_DELAY_SECONDS)

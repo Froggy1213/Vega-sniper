@@ -6,14 +6,13 @@ from aiogram.types import Message, PreCheckoutQuery
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.enums import SubscriptionStatus
+from app.db.models import User
 from app.keyboards.menu import BTN_PREMIUM, main_menu_keyboard
 from app.services.premium_service import (
     handle_pre_checkout,
     handle_successful_payment,
     send_premium_invoice,
 )
-from app.services.subscription_service import refresh_premium_status
-from app.services.user_service import get_or_create_user_in_session
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -21,13 +20,7 @@ logger = logging.getLogger(__name__)
 
 @router.message(Command("premium"))
 @router.message(F.text == BTN_PREMIUM)
-async def cmd_premium(message: Message, session: AsyncSession) -> None:
-    if message.from_user is None:
-        return
-
-    user = await get_or_create_user_in_session(session, message.from_user)
-    await refresh_premium_status(session, user)
-
+async def cmd_premium(message: Message, session: AsyncSession, user: User) -> None:
     if user.is_premium:
         # Ищем подписку в уже загруженных данных без лишних запросов к БД
         active_sub = next(
@@ -60,5 +53,5 @@ async def pre_checkout_handler(query: PreCheckoutQuery) -> None:
 
 
 @router.message(F.successful_payment)
-async def successful_payment_handler(message: Message, session: AsyncSession) -> None:
-    await handle_successful_payment(message, session)
+async def successful_payment_handler(message: Message, session: AsyncSession, user: User) -> None:
+    await handle_successful_payment(message, session, user)

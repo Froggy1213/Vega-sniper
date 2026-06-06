@@ -7,8 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.db.models import User
 from app.keyboards.menu import main_menu_keyboard
-from app.services.subscription_service import activate_stars_subscription, refresh_premium_status
-from app.services.user_service import get_or_create_user_in_session
+from app.services.subscription_service import activate_stars_subscription
 
 logger = logging.getLogger(__name__)
 
@@ -60,22 +59,20 @@ async def handle_pre_checkout(query: PreCheckoutQuery) -> None:
     await query.answer(ok=False, error_message="Invalid payment payload.")
 
 
-async def handle_successful_payment(message: Message, session: AsyncSession) -> None:
-    if message.from_user is None or message.successful_payment is None:
+async def handle_successful_payment(message: Message, session: AsyncSession, user: User) -> None:
+    if message.successful_payment is None:
         return
 
     payment = message.successful_payment
-    user_id = parse_premium_payload(payment.invoice_payload)
+    expected_user_id = parse_premium_payload(payment.invoice_payload)
 
-    if user_id is None:
+    if expected_user_id is None:
         logger.error("Unknown payment payload: %s", payment.invoice_payload)
         await message.answer("Payment received, but we could not activate Premium. Contact support.")
         return
 
-    user = await get_or_create_user_in_session(session, message.from_user)
-
-    if user.id != user_id:
-        logger.error("Payment user mismatch: expected %s, got %s", user_id, user.id)
+    if user.id != expected_user_id:
+        logger.error("Payment user mismatch: expected %s, got %s", expected_user_id, user.id)
         await message.answer("Payment verification failed. Contact support.")
         return
 

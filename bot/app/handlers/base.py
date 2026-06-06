@@ -5,8 +5,8 @@ from aiogram.filters import Command, CommandStart
 from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.models import User
 from app.keyboards.menu import BTN_HELP, main_menu_keyboard
-from app.services.user_service import get_or_create_user_in_session
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -30,11 +30,7 @@ HELP_TEXT = (
 
 
 @router.message(CommandStart())
-async def start_handler(message: Message, session: AsyncSession) -> None:
-    if message.from_user is None:
-        return
-
-    user = await get_or_create_user_in_session(session, message.from_user)
+async def start_handler(message: Message, session: AsyncSession, user: User) -> None:
     logger.info("User %s started bot (premium=%s)", user.telegram_id, user.is_premium)
 
     if user.is_premium:
