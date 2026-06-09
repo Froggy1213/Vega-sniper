@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -13,13 +14,26 @@ type Repository struct {
 }
 
 func NewRepository(ctx context.Context, databaseURL string) (*Repository, error) {
-	pool, err := pgxpool.New(ctx, databaseURL)
+	cfg, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse database URL: %w", err)
+	}
+
+	// Настройка пула соединений
+	cfg.MaxConns = 10           // Максимальное число соединений (3 воркера + запас)
+	cfg.MinConns = 2            // Минимальное — всегда держим 2 прогретыми
+	cfg.MaxConnLifetime = 1 * time.Hour   // Пересоздавать соединения каждый час
+	cfg.MaxConnIdleTime = 5 * time.Minute // Закрывать idle-соединения через 5 мин
+	cfg.HealthCheckPeriod = 30 * time.Second
+
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
 	// Check the connection
 	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
 		return nil, fmt.Errorf("database unavailable (ping failed): %w", err)
 	}
 

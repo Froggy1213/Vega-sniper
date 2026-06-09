@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"mercari/internal/infrastructure/mercari"
@@ -26,8 +27,9 @@ func main() {
 	// 1. Инициализация БД
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
-		// Локальный фолбэк (подставь свои данные, если запускаешь без докера)
-		dbURL = "postgres://sniffer_admin:super_secret_password@localhost:5432/sniffer_db"
+		slog.Error("DATABASE_URL is not set. Please set it to your PostgreSQL connection string.")
+		slog.Error("Example: postgres://user:password@localhost:5432/sniffer_db")
+		os.Exit(1)
 	}
 
 	repo, err := postgres.NewRepository(ctx, dbURL)
@@ -40,7 +42,9 @@ func main() {
 	// 2. Инициализация RabbitMQ
 	rabbitURL := os.Getenv("RABBITMQ_URL")
 	if rabbitURL == "" {
-		rabbitURL = "amqp://guest:guest@localhost:5672/"
+		slog.Error("RABBITMQ_URL is not set. Please set it to your RabbitMQ connection string.")
+		slog.Error("Example: amqp://user:password@localhost:5672/")
+		os.Exit(1)
 	}
 
 	pub, err := rabbitmq.NewPublisher(rabbitURL)

@@ -6,6 +6,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/base64"
+	"fmt"
 	"log/slog"
 	mathrand "math/rand"
 	"strconv"
@@ -51,14 +52,21 @@ type photo struct {
 
 type Client struct {
 	proxies []string
+	dpotKey *ecdsa.PrivateKey // Переиспользуется между запросами — генерируем один раз
 }
 
 // NewClient теперь принимает список прокси-серверов
 func NewClient(proxies []string) *Client {
-	// Инициализируем генератор случайных чисел
-	mathrand.Seed(time.Now().UnixNano())
+	// Генерируем ECDSA-ключ ОДИН раз при создании клиента
+	dpotKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		// На практике ошибка здесь почти невозможна, но логируем и паникуем
+		slog.Error("Failed to generate ECDSA key for DPoP, exiting", "error", err)
+		panic(fmt.Sprintf("ecdsa.GenerateKey: %v", err))
+	}
 	return &Client{
 		proxies: proxies,
+		dpotKey: dpotKey,
 	}
 }
 
@@ -136,11 +144,8 @@ func (c *Client) SearchItems(ctx context.Context, condition domain.SearchConditi
 }
 
 func (c *Client) generateDPoP(method, url string) (string, error) {
-	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return "", err
-	}
-	pubKey := privateKey.PublicKey
+	// Используем заранее сгенерированный ключ вместо создания нового на каждый запрос
+	pubKey := c.dpotKey.PublicKey
 	xBase64 := base64.RawURLEncoding.EncodeToString(pubKey.X.Bytes())
 	yBase64 := base64.RawURLEncoding.EncodeToString(pubKey.Y.Bytes())
 
@@ -154,5 +159,5 @@ func (c *Client) generateDPoP(method, url string) (string, error) {
 	token.Header["typ"] = "dpop+jwt"
 	token.Header["jwk"] = map[string]string{"kty": "EC", "crv": "P-256", "x": xBase64, "y": yBase64}
 
-	return token.SignedString(privateKey)
+	return token.SignedString(c.dpotKey)
 }

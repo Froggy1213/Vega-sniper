@@ -25,6 +25,14 @@ def get_engine() -> AsyncEngine:
             settings.database_url,
             echo=settings.db_echo,
             pool_pre_ping=True,
+            pool_size=20,           # Базовый размер пула
+            max_overflow=10,        # Доп. соединения сверх pool_size под пиковой нагрузкой
+            pool_recycle=3600,      # Пересоздавать соединения каждый час (безопасность + утечки)
+            pool_timeout=30,        # Таймаут ожидания свободного соединения (сек)
+            connect_args={
+                "timeout": 10,          # Таймаут установки TCP-соединения
+                "command_timeout": 30,  # Таймаут выполнения SQL-запроса
+            },
         )
     return engine
 

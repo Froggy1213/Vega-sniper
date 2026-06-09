@@ -4,10 +4,13 @@ import (
 	"context"
 	"log/slog"
 	"math/rand"
+	"sync"
 	"time"
 
 	"mercari/internal/domain"
 )
+
+const searchTimeout = 30 * time.Second // Таймаут одного HTTP-запроса к Mercari
 
 type Scraper struct {
 	gateway   domain.ScraperGateway
@@ -27,12 +30,13 @@ func NewScraper(gw domain.ScraperGateway, pub domain.Publisher, repo domain.Item
 func (s *Scraper) Start(ctx context.Context) {
 	const numWorkers = 3 // Количество одновременных рабочих (горутин)
 
-	// Канал, через который мы будем передавать задачи рабочим
 	jobs := make(chan string, 100)
+	var wg sync.WaitGroup
 
 	// 1. Запускаем рабочих в фоне
 	for i := 1; i <= numWorkers; i++ {
-		go s.worker(ctx, i, jobs)
+		wg.Add(1)
+		go s.worker(ctx, i, jobs, &wg)
 	}
 
 	// 2. Планировщик раз в 30 секунд забирает слова из БД и кидает их в канал
@@ -45,7 +49,10 @@ func (s *Scraper) Start(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Info("🛑 Stopping scraper loop. Waiting for workers to finish...")
+			slog.Info("🛑 Shutdown signal received. Draining job queue...")
+			close(jobs)      // Закрываем канал — воркеры доедят оставшиеся задачи
+			wg.Wait()         // Ждём завершения всех in-flight операций
+			slog.Info("🛑 All workers finished. Scraper stopped cleanly.")
 			return
 		case <-ticker.C:
 			s.dispatchJobs(ctx, jobs)
@@ -79,23 +86,24 @@ func (s *Scraper) dispatchJobs(ctx context.Context, jobs chan<- string) {
 }
 
 // worker - это рабочий поток, который бесконечно ждет задачи из канала jobs
-func (s *Scraper) worker(ctx context.Context, id int, jobs <-chan string) {
+func (s *Scraper) worker(ctx context.Context, id int, jobs <-chan string, wg *sync.WaitGroup) {
+	defer wg.Done()
 	slog.Info("👷 Worker started", "worker_id", id)
 
-	for {
-		select {
-		case <-ctx.Done():
-			slog.Info("🛑 Worker stopped", "worker_id", id)
-			return
-		case keyword := <-jobs:
-			s.processSearch(ctx, id, domain.SearchCondition{Keyword: keyword})
+	for keyword := range jobs {
+		// Используем отдельный контекст с таймаутом, чтобы shutdown не обрывал
+		// текущий HTTP-запрос на полуслове (но при этом не висим вечно)
+		searchCtx, cancel := context.WithTimeout(context.Background(), searchTimeout)
+		s.processSearch(searchCtx, id, domain.SearchCondition{Keyword: keyword})
+		cancel()
 
-			// ⏱ ВАЖНО: Умная случайная задержка (Jitter) от 2 до 6 секунд
-			// Имитирует поведение человека и защищает от бана Mercari
-			jitter := time.Duration(rand.Intn(4000)+2000) * time.Millisecond
-			time.Sleep(jitter)
-		}
+		// ⏱ ВАЖНО: Умная случайная задержка (Jitter) от 2 до 6 секунд
+		// Имитирует поведение человека и защищает от бана Mercari
+		jitter := time.Duration(rand.Intn(4000)+2000) * time.Millisecond
+		time.Sleep(jitter)
 	}
+
+	slog.Info("🛑 Worker stopped (job queue closed)", "worker_id", id)
 }
 
 // processSearch выполняет сам процесс поиска и отправки для одного ключевого слова

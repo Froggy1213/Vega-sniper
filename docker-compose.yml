@@ -5,9 +5,9 @@ services:
     container_name: sniffer_db
     restart: always
     environment:
-      POSTGRES_USER: sniffer_admin
-      POSTGRES_PASSWORD: super_secret_password
-      POSTGRES_DB: sniffer_db
+      POSTGRES_USER: ${POSTGRES_USER:-sniffer_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      POSTGRES_DB: ${POSTGRES_DB:-sniffer_db}
     ports:
       - "5432:5432"
     volumes:
@@ -19,8 +19,8 @@ services:
     container_name: sniffer_rabbitmq
     restart: always
     environment:
-      RABBITMQ_DEFAULT_USER: guest
-      RABBITMQ_DEFAULT_PASS: guest
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:?RABBITMQ_PASS must be set}
     ports:
       - "5672:5672"
       - "15672:15672"
@@ -36,9 +36,9 @@ services:
     env_file:
       - .env
     environment:
-      # Заменяем localhost на имена контейнеров для работы внутри докер-сети
-      RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
-      DATABASE_URL: "postgresql+asyncpg://sniffer_admin:super_secret_password@db:5432/sniffer_db"
+      # Контейнерные URL формируются из переменных окружения
+      RABBITMQ_URL: "amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:?RABBITMQ_PASS must be set}@rabbitmq:5672/"
+      DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER:-sniffer_admin}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/${POSTGRES_DB:-sniffer_db}"
     depends_on:
       - db
       - rabbitmq
@@ -49,8 +49,11 @@ services:
       context: ./scrapers/mercari
     container_name: sniffer_scraper_mercari
     restart: always
+    env_file:
+      - .env
     environment:
-      RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
+      RABBITMQ_URL: "amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:?RABBITMQ_PASS must be set}@rabbitmq:5672/"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-sniffer_admin}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/${POSTGRES_DB:-sniffer_db}"
     depends_on:
       - rabbitmq
 

@@ -11,7 +11,7 @@ RUN go mod download
 COPY . .
 
 # Компилируем бинарник (CGO_ENABLED=0 делает его максимально независимым)
-RUN CGO_ENABLED=0 GOOS=linux go build -o mercari-scraper-v2 main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -o mercari-scraper-v2 ./cmd/scraper/main.go
 
 # Этап 2: Финальный образ (Используем пустой alpine linux)
 FROM alpine:latest

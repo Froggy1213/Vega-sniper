@@ -3,7 +3,7 @@ import logging
 
 import aio_pika
 from aiogram import Bot
-from aiogram.exceptions import TelegramAPIError, TelegramForbiddenError, TelegramRetryAfter
+from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
 from aiogram.types import URLInputFile
 from pydantic import ValidationError
 
@@ -11,6 +11,7 @@ from app.core.config import settings
 from app.db.session import get_session_factory
 from app.services.matcher import (
     MarketplaceItem,
+    MatchResult,
     find_matches_in_memory,
     get_active_searches,
 )
@@ -18,6 +19,7 @@ from app.services.matcher import (
 logger = logging.getLogger(__name__)
 
 RECONNECT_DELAY_SECONDS = 5
+NOTIFY_CONCURRENCY = 10  # Максимум одновременных отправок уведомлений
 
 _ACTIVE_SEARCHES_CACHE = []
 
@@ -81,22 +83,40 @@ async def _consume_loop(bot: Bot) -> None:
 
                     matches = find_matches_in_memory(item, _ACTIVE_SEARCHES_CACHE)
 
-                    try:
-                        for match in matches:
+                    if not matches:
+                        await message.ack()
+                        continue
+
+                    # Параллельная отправка уведомлений с семафором
+                    sem = asyncio.Semaphore(NOTIFY_CONCURRENCY)
+
+                    async def _notify_one(match: MatchResult) -> None:
+                        async with sem:
                             try:
                                 await _send_notification(bot, match.user_id, item, match.keyword)
                             except TelegramForbiddenError:
                                 logger.info("User %s blocked bot", match.user_id)
                                 # TODO: Деактивировать юзера в БД, чтобы не гонять вхолостую
-                                
-                        await message.ack()
+                            except TelegramRetryAfter as exc:
+                                logger.warning(
+                                    "Flood control for user %s, retry after %ss",
+                                    match.user_id, exc.retry_after,
+                                )
 
-                    except (TelegramAPIError, TelegramRetryAfter) as exc:
-                        logger.warning("Telegram network error, requeueing: %s", exc)
-                        await message.reject(requeue=True)
-                    except Exception:
-                        logger.exception("Unexpected error during notification")
-                        await message.reject(requeue=True)
+                    results = await asyncio.gather(
+                        *[_notify_one(m) for m in matches],
+                        return_exceptions=True,
+                    )
+
+                    # Логируем критические ошибки (не Telegram-специфичные)
+                    for i, result in enumerate(results):
+                        if isinstance(result, Exception):
+                            logger.error(
+                                "Failed to notify user %s: %s",
+                                matches[i].user_id, result,
+                            )
+
+                    await message.ack()
 
 
 async def consume_rabbitmq(bot: Bot) -> None:
