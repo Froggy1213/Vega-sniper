@@ -17,6 +17,8 @@ RUN uv sync --frozen --no-dev
 COPY app/ ./app/
 COPY alembic/ ./alembic/
 COPY alembic.ini ./
+COPY entrypoint.sh ./
+RUN chmod +x entrypoint.sh
 
-# Команда, которая будет выполняться при старте контейнера
-CMD ["uv", "run", "python", "-m", "app.main"]
+# Запускаем entrypoint: миграции → бот
+CMD ["./entrypoint.sh"]

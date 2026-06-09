@@ -118,8 +118,17 @@ func (c *Client) SearchItems(ctx context.Context, condition domain.SearchConditi
 		return nil, err
 	}
 	if !resp.IsSuccessState() {
-		slog.Warn("Неуспешный ответ от Mercari (Возможно капча/бан)", "status", resp.Status)
-		return []domain.Item{}, nil
+		switch resp.StatusCode {
+		case 429:
+			return nil, fmt.Errorf("mercari rate limited (HTTP 429)")
+		case 403:
+			return nil, fmt.Errorf("mercari access denied (HTTP 403) — proxy may be blocked")
+		case 502, 503, 504:
+			return nil, fmt.Errorf("mercari temporarily unavailable (HTTP %d)", resp.StatusCode)
+		default:
+			slog.Warn("Unexpected Mercari response", "status", resp.StatusCode, "body_snippet", string(resp.Bytes()[:min(len(resp.Bytes()), 200)]))
+			return []domain.Item{}, nil
+		}
 	}
 
 	var domainItems []domain.Item
@@ -128,7 +137,11 @@ func (c *Client) SearchItems(ctx context.Context, condition domain.SearchConditi
 		if len(mItem.Photos) > 0 {
 			img = mItem.Photos[0].URI
 		}
-		priceInt, _ := strconv.Atoi(mItem.Price)
+		priceInt, err := strconv.Atoi(mItem.Price)
+		if err != nil {
+			slog.Warn("Invalid price from Mercari, skipping item", "item_id", mItem.ID, "raw_price", mItem.Price, "error", err)
+			continue
+		}
 
 		domainItems = append(domainItems, domain.Item{
 			Platform: "mercari",

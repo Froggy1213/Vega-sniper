@@ -67,7 +67,14 @@ async def _consume_loop(bot: Bot) -> None:
     async with connection:
         channel = await connection.channel()
         await channel.set_qos(prefetch_count=50)
-        queue = await channel.declare_queue("new_items_queue", durable=True)
+        queue = await channel.declare_queue(
+            "new_items_queue",
+            durable=True,
+            arguments={
+                "x-dead-letter-exchange": "dead_letter_exchange",
+                "x-dead-letter-routing-key": "dead",
+            },
+        )
         
         logger.info("Connected to RabbitMQ, waiting for items...")
 
@@ -99,9 +106,17 @@ async def _consume_loop(bot: Bot) -> None:
                                 # TODO: Деактивировать юзера в БД, чтобы не гонять вхолостую
                             except TelegramRetryAfter as exc:
                                 logger.warning(
-                                    "Flood control for user %s, retry after %ss",
+                                    "Flood control for user %s, retrying after %ss",
                                     match.user_id, exc.retry_after,
                                 )
+                                await asyncio.sleep(exc.retry_after)
+                                try:
+                                    await _send_notification(bot, match.user_id, item, match.keyword)
+                                except Exception as retry_exc:
+                                    logger.error(
+                                        "Retry failed for user %s: %s",
+                                        match.user_id, retry_exc,
+                                    )
 
                     results = await asyncio.gather(
                         *[_notify_one(m) for m in matches],
@@ -121,17 +136,23 @@ async def _consume_loop(bot: Bot) -> None:
 
 async def consume_rabbitmq(bot: Bot) -> None:
     session_factory = get_session_factory()
-    
+
     # Запускаем апдейтер кэша один раз здесь
     cache_task = asyncio.create_task(_update_cache_loop(session_factory))
 
-    while True:
+    try:
+        while True:
+            try:
+                await _consume_loop(bot)
+            except asyncio.CancelledError:
+                logger.info("RabbitMQ consumer stopped")
+                raise
+            except Exception:
+                logger.exception("RabbitMQ consumer error, reconnecting in %ss", RECONNECT_DELAY_SECONDS)
+                await asyncio.sleep(RECONNECT_DELAY_SECONDS)
+    finally:
+        cache_task.cancel()
         try:
-            await _consume_loop(bot)
+            await cache_task
         except asyncio.CancelledError:
-            logger.info("RabbitMQ consumer stopped")
-            cache_task.cancel() # Убиваем кэш-апдейтер при выключении бота
-            raise
-        except Exception:
-            logger.exception("RabbitMQ consumer error, reconnecting in %ss", RECONNECT_DELAY_SECONDS)
-            await asyncio.sleep(RECONNECT_DELAY_SECONDS)
+            pass

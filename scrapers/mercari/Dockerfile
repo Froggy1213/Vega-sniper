@@ -14,7 +14,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o mercari-scraper-v2 ./cmd/scraper/main.go
 
 # Этап 2: Финальный образ (Используем пустой alpine linux)
-FROM alpine:latest
+FROM alpine:3.22
 
 # Добавляем корневые сертификаты, чтобы Go мог делать HTTPS запросы к Mercari
 RUN apk --no-cache add ca-certificates

@@ -18,5 +18,6 @@ type ItemRepository interface {
 	Exists(ctx context.Context, itemID string) (bool, error)
 	Save(ctx context.Context, itemID string) error
 	GetActiveKeywords(ctx context.Context) ([]string, error)
+	DeleteOlderThan(ctx context.Context, ageDays int) (int64, error)
 	Close()
 }

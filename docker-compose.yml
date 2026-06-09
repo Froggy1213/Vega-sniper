@@ -12,6 +12,12 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sniffer_admin} -d ${POSTGRES_DB:-sniffer_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   # 🐇 Брокер сообщений
   rabbitmq:
@@ -26,6 +32,12 @@ services:
       - "15672:15672"
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
 
   # 🤖 Наш Telegram-бот
   bot:
@@ -40,8 +52,10 @@ services:
       RABBITMQ_URL: "amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:?RABBITMQ_PASS must be set}@rabbitmq:5672/"
       DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER:-sniffer_admin}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/${POSTGRES_DB:-sniffer_db}"
     depends_on:
-      - db
-      - rabbitmq
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
 
   # 🐹 Микросервис парсера Mercari
   scraper_mercari:
@@ -55,7 +69,10 @@ services:
       RABBITMQ_URL: "amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:?RABBITMQ_PASS must be set}@rabbitmq:5672/"
       DATABASE_URL: "postgres://${POSTGRES_USER:-sniffer_admin}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/${POSTGRES_DB:-sniffer_db}"
     depends_on:
-      - rabbitmq
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
 
 volumes:
   postgres_data:

@@ -67,6 +67,21 @@ func (r *Repository) Save(ctx context.Context, itemID string) error {
 	return err
 }
 
+const dedupRetentionDays = 30
+
+// DeleteOlderThan удаляет записи старше указанного количества дней.
+// Возвращает количество удалённых записей.
+func (r *Repository) DeleteOlderThan(ctx context.Context, ageDays int) (int64, error) {
+	result, err := r.pool.Exec(ctx,
+		`DELETE FROM mercari_parsed_items WHERE created_at < NOW() - ($1 || ' days')::INTERVAL`,
+		fmt.Sprintf("%d", ageDays),
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 func (r *Repository) Close() {
 	if r.pool != nil {
 		r.pool.Close()
