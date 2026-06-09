@@ -10,12 +10,3 @@ def format_price_range(price_min: int | None, price_max: int | None) -> str:
 
 def normalize_price(value: int) -> int | None:
     return value if value > 0 else None
-
-
-def preset_to_price(value: int) -> int | None:
-    """Map inline preset callback value to stored price. 0 = custom input requested."""
-    if value == 0:
-        return None
-    if value < 0:
-        return None
-    return value

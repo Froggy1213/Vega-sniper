@@ -10,13 +10,6 @@ from app.db.models import User
 logger = logging.getLogger(__name__)
 
 
-async def get_or_create_user(tg_user: TgUser) -> User:
-    from app.db.session import get_session
-
-    async with get_session() as session:
-        return await get_or_create_user_in_session(session, tg_user)
-
-
 async def get_or_create_user_in_session(session: AsyncSession, tg_user: TgUser | None) -> User:
     if tg_user is None:
         raise ValueError("Telegram user is missing from update")

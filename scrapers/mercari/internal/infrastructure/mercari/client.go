@@ -4,11 +4,11 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
-	"crypto/rand"
+	crand "crypto/rand"
 	"encoding/base64"
 	"fmt"
 	"log/slog"
-	mathrand "math/rand"
+	mrand "math/rand/v2"
 	"strconv"
 	"time"
 
@@ -21,7 +21,6 @@ import (
 
 const targetURL = "https://api.mercari.jp/v2/entities:search"
 
-// (Структуры searchPayload, searchCondition, mercariResponse и т.д. оставляем без изменений)
 type searchPayload struct {
 	PageSize        int             `json:"pageSize"`
 	SearchSessionId string          `json:"searchSessionId"`
@@ -51,36 +50,48 @@ type photo struct {
 }
 
 type Client struct {
-	proxies []string
-	dpotKey *ecdsa.PrivateKey // Переиспользуется между запросами — генерируем один раз
+	httpClients []*req.Client // Пул переиспользуемых HTTP-клиентов (по одному на прокси)
+	dpotKey     *ecdsa.PrivateKey
 }
 
-// NewClient теперь принимает список прокси-серверов
+// NewClient создаёт пул HTTP-клиентов один раз при старте.
+// Каждый прокси получает свой клиент с собственным пулом соединений.
 func NewClient(proxies []string) *Client {
-	// Генерируем ECDSA-ключ ОДИН раз при создании клиента
-	dpotKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	dpotKey, err := ecdsa.GenerateKey(elliptic.P256(), crand.Reader)
 	if err != nil {
-		// На практике ошибка здесь почти невозможна, но логируем и паникуем
 		slog.Error("Failed to generate ECDSA key for DPoP, exiting", "error", err)
 		panic(fmt.Sprintf("ecdsa.GenerateKey: %v", err))
 	}
+
+	// Пре-создаём HTTP-клиенты: один на прокси, или один дефолтный если прокси нет
+	var httpClients []*req.Client
+	if len(proxies) == 0 {
+		httpClients = []*req.Client{
+			req.C().ImpersonateChrome().SetTimeout(15 * time.Second),
+		}
+		slog.Warn("⚠️ No proxies configured — running without proxy rotation")
+	} else {
+		httpClients = make([]*req.Client, 0, len(proxies))
+		for _, proxyURL := range proxies {
+			client := req.C().
+				ImpersonateChrome().
+				SetTimeout(15 * time.Second).
+				SetProxyURL(proxyURL)
+			httpClients = append(httpClients, client)
+		}
+		slog.Info("🌐 Initialized HTTP client pool", "count", len(httpClients))
+	}
+
 	return &Client{
-		proxies: proxies,
-		dpotKey: dpotKey,
+		httpClients: httpClients,
+		dpotKey:     dpotKey,
 	}
 }
 
-// getReqClient создает HTTP-клиент с имитацией браузера и случайным прокси
-func (c *Client) getReqClient() *req.Client {
-	client := req.C().ImpersonateChrome().SetTimeout(15 * time.Second)
-
-	if len(c.proxies) > 0 {
-		// Выбираем случайный прокси из списка
-		randomProxy := c.proxies[mathrand.Intn(len(c.proxies))]
-		client.SetProxyURL(randomProxy)
-	}
-
-	return client
+// pickClient возвращает случайный HTTP-клиент из пула.
+// math/rand/v2 безопасен для конкурентного использования.
+func (c *Client) pickClient() *req.Client {
+	return c.httpClients[mrand.IntN(len(c.httpClients))]
 }
 
 func (c *Client) SearchItems(ctx context.Context, condition domain.SearchCondition) ([]domain.Item, error) {
@@ -102,10 +113,8 @@ func (c *Client) SearchItems(ctx context.Context, condition domain.SearchConditi
 
 	var result mercariResponse
 
-	// Используем динамический клиент (со случайным прокси)
-	httpClient := c.getReqClient()
-
-	resp, err := httpClient.R().
+	// Берём готовый клиент из пула (не создаём новый на каждый запрос!)
+	resp, err := c.pickClient().R().
 		SetContext(ctx).
 		SetHeader("X-Platform", "web").
 		SetHeader("Accept", "application/json").
@@ -157,7 +166,6 @@ func (c *Client) SearchItems(ctx context.Context, condition domain.SearchConditi
 }
 
 func (c *Client) generateDPoP(method, url string) (string, error) {
-	// Используем заранее сгенерированный ключ вместо создания нового на каждый запрос
 	pubKey := c.dpotKey.PublicKey
 	xBase64 := base64.RawURLEncoding.EncodeToString(pubKey.X.Bytes())
 	yBase64 := base64.RawURLEncoding.EncodeToString(pubKey.Y.Bytes())

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -20,47 +21,50 @@ func main() {
 
 	slog.Info("🚀 Starting Mercari scraper microservice")
 
-	// Context for start and shutdown
+	// run() возвращает ошибку — так все defer отрабатывают до os.Exit
+	if err := run(); err != nil {
+		slog.Error("Fatal error", "error", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	// Context for graceful shutdown
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	// 1. Инициализация БД
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
-		slog.Error("DATABASE_URL is not set. Please set it to your PostgreSQL connection string.")
-		slog.Error("Example: postgres://user:password@localhost:5432/sniffer_db")
-		os.Exit(1)
+		return fmt.Errorf("DATABASE_URL is not set")
 	}
 
 	repo, err := postgres.NewRepository(ctx, dbURL)
 	if err != nil {
-		slog.Error("Critical DB error", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("database: %w", err)
 	}
 	defer repo.Close()
 
 	// 2. Инициализация RabbitMQ
 	rabbitURL := os.Getenv("RABBITMQ_URL")
 	if rabbitURL == "" {
-		slog.Error("RABBITMQ_URL is not set. Please set it to your RabbitMQ connection string.")
-		slog.Error("Example: amqp://user:password@localhost:5672/")
-		os.Exit(1)
+		return fmt.Errorf("RABBITMQ_URL is not set")
 	}
 
 	pub, err := rabbitmq.NewPublisher(rabbitURL)
 	if err != nil {
-		slog.Error("Critical RabbitMQ error", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("rabbitmq: %w", err)
 	}
 	defer pub.Close()
 
+	// 3. Прокси
 	var proxyList []string
 	proxiesEnv := os.Getenv("PROXIES")
 	if proxiesEnv != "" {
 		proxyList = strings.Split(proxiesEnv, ",")
-		slog.Info("🌐 Загружены прокси", "count", len(proxyList))
+		slog.Info("🌐 Loaded proxies", "count", len(proxyList))
 	} else {
-		slog.Warn("⚠️ Запуск без прокси. Есть высокий риск блокировки от Mercari!")
+		slog.Warn("⚠️ No proxies configured — high risk of Mercari rate limiting")
 	}
 
 	mercariClient := mercari.NewClient(proxyList)
@@ -70,5 +74,6 @@ func main() {
 
 	scraperApp.Start(ctx)
 
-	slog.Info("✅ Microservice stopped safely and successfully.")
+	slog.Info("✅ Microservice stopped safely.")
+	return nil
 }
