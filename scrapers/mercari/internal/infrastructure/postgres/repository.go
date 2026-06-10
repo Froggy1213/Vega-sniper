@@ -67,8 +67,6 @@ func (r *Repository) Save(ctx context.Context, itemID string) error {
 	return err
 }
 
-const dedupRetentionDays = 30
-
 // DeleteOlderThan удаляет записи старше указанного количества дней.
 // Возвращает количество удалённых записей.
 func (r *Repository) DeleteOlderThan(ctx context.Context, ageDays int) (int64, error) {

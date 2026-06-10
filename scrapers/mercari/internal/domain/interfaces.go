@@ -1,6 +1,12 @@
 package domain
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+// ErrRateLimited возвращается шлюзом (gateway) когда внешний API отвечает 429.
+var ErrRateLimited = errors.New("mercari rate limited")
 
 // ScraperGateway - интерфейс для получения товаров (пока реализован только Mercari).
 type ScraperGateway interface {

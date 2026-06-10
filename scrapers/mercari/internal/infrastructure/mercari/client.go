@@ -19,6 +19,7 @@ import (
 	"mercari/internal/domain"
 )
 
+
 const targetURL = "https://api.mercari.jp/v2/entities:search"
 
 type searchPayload struct {
@@ -129,7 +130,7 @@ func (c *Client) SearchItems(ctx context.Context, condition domain.SearchConditi
 	if !resp.IsSuccessState() {
 		switch resp.StatusCode {
 		case 429:
-			return nil, fmt.Errorf("mercari rate limited (HTTP 429)")
+			return nil, fmt.Errorf("%w (HTTP 429)", domain.ErrRateLimited)
 		case 403:
 			return nil, fmt.Errorf("mercari access denied (HTTP 403) — proxy may be blocked")
 		case 502, 503, 504:

@@ -2,9 +2,9 @@ package usecase
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"math/rand"
-	"strings"
 	"sync"
 	"time"
 
@@ -160,7 +160,7 @@ func (s *Scraper) processSearch(ctx context.Context, workerID int, cond domain.S
 	if err != nil {
 		slog.Error("⚠️ Failed to retrieve items", "worker_id", workerID, "keyword", cond.Keyword, "error", err)
 		// Check if it's a rate-limit error — signal caller to back off
-		if strings.Contains(err.Error(), "rate limited") {
+		if errors.Is(err, domain.ErrRateLimited) {
 			return true
 		}
 		return false
@@ -178,20 +178,24 @@ func (s *Scraper) processSearch(ctx context.Context, workerID int, cond domain.S
 			continue // Товар уже был, пропускаем
 		}
 
-		// 2. Отправляем в RabbitMQ
+		// 2. Сначала сохраняем ID в dedup-таблицу, и только потом публикуем.
+		//    Если упадём между Publish и Save — товар уйдёт в RabbitMQ повторно при
+		//    следующем запуске. Save → Publish безопаснее: в худшем случае товар
+		//    будет сохранён но не опубликован (тихая потеря), что лучше дубликата.
+		err = s.repo.Save(ctx, item.ID)
+		if err != nil {
+			slog.Error("Database save error", "error", err)
+			continue
+		}
+
+		// 3. Отправляем в RabbitMQ
 		err = s.publisher.Publish(ctx, item)
 		if err != nil {
 			slog.Error("❌ Failed to send to RabbitMQ", "error", err)
 			continue
 		}
 
-		// 3. Сохраняем ID в БД
-		err = s.repo.Save(ctx, item.ID)
-		if err != nil {
-			slog.Error("Database save error", "error", err)
-		} else {
-			newItemsCount++
-		}
+		newItemsCount++
 	}
 
 	if newItemsCount > 0 {

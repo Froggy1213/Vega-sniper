@@ -55,10 +55,10 @@ def find_matches_in_memory(
         if search.keyword.lower() not in item_name_lower:
             continue
             
-        if search.price_min and item.price < search.price_min:
+        if search.price_min is not None and item.price < search.price_min:
             continue
-            
-        if search.price_max and item.price > search.price_max:
+
+        if search.price_max is not None and item.price > search.price_max:
             continue
             
         matches.append(MatchResult(user_id=search.user.telegram_id, keyword=search.keyword))

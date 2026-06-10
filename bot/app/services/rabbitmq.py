@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 
 import aio_pika
 from aiogram import Bot
@@ -21,7 +22,38 @@ logger = logging.getLogger(__name__)
 RECONNECT_DELAY_SECONDS = 5
 NOTIFY_CONCURRENCY = 10  # Максимум одновременных отправок уведомлений
 
-_ACTIVE_SEARCHES_CACHE = []
+# ── Кэш активных поисков ──────────────────────────────────────────────
+# ВАЖНО: этот кэш — глобальный список. В asyncio (однопоточный event loop)
+# гонки данных нет, но если в будущем добавится ThreadPoolExecutor или
+# несколько event-loop воркеров — заменить на asyncio.Queue + Lock.
+_ACTIVE_SEARCHES_CACHE: list = []
+
+# ── Локальный кэш заблокированных пользователей ────────────────────────
+# Чтобы не дёргать Telegram API для каждого матча, когда пользователь
+# заблокировал бота, храним user_id → timestamp блокировки. TTL — 1 час.
+_BLOCKED_USER_TTL = 3600  # секунд
+_BLOCKED_USERS: dict[int, float] = {}
+
+
+def _is_user_blocked(user_id: int) -> bool:
+    """Проверяет, не заблокировал ли пользователь бота (с TTL)."""
+    blocked_at = _BLOCKED_USERS.get(user_id)
+    if blocked_at is None:
+        return False
+    if time.monotonic() - blocked_at > _BLOCKED_USER_TTL:
+        del _BLOCKED_USERS[user_id]
+        return False
+    return True
+
+
+def _mark_user_blocked(user_id: int) -> None:
+    """Запоминает пользователя как заблокировавшего бота."""
+    _BLOCKED_USERS[user_id] = time.monotonic()
+    # Заодно подчищаем протухшие записи (амортизированный O(1))
+    cutoff = time.monotonic() - _BLOCKED_USER_TTL
+    for uid, ts in list(_BLOCKED_USERS.items()):
+        if ts < cutoff:
+            del _BLOCKED_USERS[uid]
 
 
 def _build_notification_text(item: MarketplaceItem, keyword: str) -> str:
@@ -47,6 +79,40 @@ async def _send_notification(bot: Bot, chat_id: int, item: MarketplaceItem, keyw
         await bot.send_message(chat_id=chat_id, text=text)
 
 
+async def _notify_one(
+    bot: Bot,
+    sem: asyncio.Semaphore,
+    match: MatchResult,
+    item: MarketplaceItem,
+) -> None:
+    """Отправляет одно уведомление под семафором, с обработкой ошибок."""
+    if _is_user_blocked(match.user_id):
+        return
+
+    async with sem:
+        try:
+            await _send_notification(bot, match.user_id, item, match.keyword)
+        except TelegramForbiddenError:
+            logger.info("User %s blocked bot, adding to local blocklist", match.user_id)
+            _mark_user_blocked(match.user_id)
+        except TelegramRetryAfter as exc:
+            logger.warning(
+                "Flood control for user %s, retrying after %ss",
+                match.user_id, exc.retry_after,
+            )
+            await asyncio.sleep(exc.retry_after)
+            try:
+                await _send_notification(bot, match.user_id, item, match.keyword)
+            except TelegramForbiddenError:
+                logger.info("User %s blocked bot (on retry)", match.user_id)
+                _mark_user_blocked(match.user_id)
+            except Exception as retry_exc:
+                logger.error(
+                    "Retry failed for user %s: %s",
+                    match.user_id, retry_exc,
+                )
+
+
 async def _update_cache_loop(session_factory) -> None:
     """Фоновое обновление кэша поисков раз в минуту."""
     global _ACTIVE_SEARCHES_CACHE
@@ -61,7 +127,7 @@ async def _update_cache_loop(session_factory) -> None:
         await asyncio.sleep(60)
 
 
-async def _consume_loop(bot: Bot) -> None:
+async def _consume_loop(bot: Bot, notify_sem: asyncio.Semaphore) -> None:
     connection = await aio_pika.connect_robust(settings.rabbitmq_url)
 
     async with connection:
@@ -75,7 +141,7 @@ async def _consume_loop(bot: Bot) -> None:
                 "x-dead-letter-routing-key": "dead",
             },
         )
-        
+
         logger.info("Connected to RabbitMQ, waiting for items...")
 
         async with queue.iterator() as queue_iter:
@@ -94,32 +160,9 @@ async def _consume_loop(bot: Bot) -> None:
                         await message.ack()
                         continue
 
-                    # Параллельная отправка уведомлений с семафором
-                    sem = asyncio.Semaphore(NOTIFY_CONCURRENCY)
-
-                    async def _notify_one(match: MatchResult) -> None:
-                        async with sem:
-                            try:
-                                await _send_notification(bot, match.user_id, item, match.keyword)
-                            except TelegramForbiddenError:
-                                logger.info("User %s blocked bot", match.user_id)
-                                # TODO: Деактивировать юзера в БД, чтобы не гонять вхолостую
-                            except TelegramRetryAfter as exc:
-                                logger.warning(
-                                    "Flood control for user %s, retrying after %ss",
-                                    match.user_id, exc.retry_after,
-                                )
-                                await asyncio.sleep(exc.retry_after)
-                                try:
-                                    await _send_notification(bot, match.user_id, item, match.keyword)
-                                except Exception as retry_exc:
-                                    logger.error(
-                                        "Retry failed for user %s: %s",
-                                        match.user_id, retry_exc,
-                                    )
-
+                    # Параллельная отправка уведомлений под общим семафором
                     results = await asyncio.gather(
-                        *[_notify_one(m) for m in matches],
+                        *[_notify_one(bot, notify_sem, m, item) for m in matches],
                         return_exceptions=True,
                     )
 
@@ -137,13 +180,17 @@ async def _consume_loop(bot: Bot) -> None:
 async def consume_rabbitmq(bot: Bot) -> None:
     session_factory = get_session_factory()
 
+    # Семафор создаётся ОДИН раз здесь и живёт всё время жизни консьюмера.
+    # Он ограничивает общий поток уведомлений, а не один батч.
+    notify_sem = asyncio.Semaphore(NOTIFY_CONCURRENCY)
+
     # Запускаем апдейтер кэша один раз здесь
     cache_task = asyncio.create_task(_update_cache_loop(session_factory))
 
     try:
         while True:
             try:
-                await _consume_loop(bot)
+                await _consume_loop(bot, notify_sem)
             except asyncio.CancelledError:
                 logger.info("RabbitMQ consumer stopped")
                 raise
