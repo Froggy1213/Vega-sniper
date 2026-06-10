@@ -18,9 +18,13 @@ class DbSessionMiddleware(BaseMiddleware):
         async with session_factory() as session:
             data["session"] = session
             
-            # Прокидываем юзера во все хэндлеры
-            if event.from_user:
-                user = await get_or_create_user_in_session(session, event.from_user)
+            # 1. Достаем пользователя из словаря data, а не из event
+            telegram_user = data.get("event_from_user")
+            
+            # 2. Проверяем, есть ли пользователь (некоторые апдейты бывают без него)
+            if telegram_user:
+                # 3. Передаем telegram_user в функцию
+                user = await get_or_create_user_in_session(session, telegram_user)
                 data["user"] = user
                 
             try:

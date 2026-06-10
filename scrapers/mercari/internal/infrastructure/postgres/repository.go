@@ -20,8 +20,8 @@ func NewRepository(ctx context.Context, databaseURL string) (*Repository, error)
 	}
 
 	// Настройка пула соединений
-	cfg.MaxConns = 10           // Максимальное число соединений (3 воркера + запас)
-	cfg.MinConns = 2            // Минимальное — всегда держим 2 прогретыми
+	cfg.MaxConns = 10                     // Максимальное число соединений (3 воркера + запас)
+	cfg.MinConns = 2                      // Минимальное — всегда держим 2 прогретыми
 	cfg.MaxConnLifetime = 1 * time.Hour   // Пересоздавать соединения каждый час
 	cfg.MaxConnIdleTime = 5 * time.Minute // Закрывать idle-соединения через 5 мин
 	cfg.HealthCheckPeriod = 30 * time.Second
@@ -90,7 +90,7 @@ func (r *Repository) GetActiveKeywords(ctx context.Context) ([]string, error) {
 	query := `
 		SELECT DISTINCT keyword 
 		FROM searches 
-		WHERE is_active = true AND platform = 'mercari'
+		WHERE is_active = true AND platform = 'MERCARI'
 	`
 
 	rows, err := r.pool.Query(ctx, query)

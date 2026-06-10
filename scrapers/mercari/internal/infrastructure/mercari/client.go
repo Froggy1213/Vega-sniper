@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	mrand "math/rand/v2"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -18,7 +19,6 @@ import (
 
 	"mercari/internal/domain"
 )
-
 
 const targetURL = "https://api.mercari.jp/v2/entities:search"
 
@@ -153,12 +153,20 @@ func (c *Client) SearchItems(ctx context.Context, condition domain.SearchConditi
 			continue
 		}
 
+		// 🎯 НАШ ФИКС ДЛЯ ПРАВИЛЬНЫХ ССЫЛОК
+		var itemURL string
+		if strings.HasPrefix(mItem.ID, "m") {
+			itemURL = "https://jp.mercari.com/item/" + mItem.ID
+		} else {
+			itemURL = "https://jp.mercari.com/shops/product/" + mItem.ID
+		}
+
 		domainItems = append(domainItems, domain.Item{
 			Platform: "mercari",
 			ID:       mItem.ID,
 			Name:     mItem.Name,
 			Price:    priceInt,
-			URL:      "https://jp.mercari.com/item/" + mItem.ID,
+			URL:      itemURL, // Используем сформированную ссылку
 			PhotoURL: img,
 		})
 	}
