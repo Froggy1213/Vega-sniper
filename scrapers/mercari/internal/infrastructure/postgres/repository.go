@@ -88,7 +88,7 @@ func (r *Repository) Close() {
 
 func (r *Repository) GetActiveKeywords(ctx context.Context) ([]string, error) {
 	query := `
-		SELECT DISTINCT keyword 
+		SELECT DISTINCT LOWER(keyword) 
 		FROM searches 
 		WHERE is_active = true AND platform = 'MERCARI'
 	`
